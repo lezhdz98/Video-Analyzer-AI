@@ -1,6 +1,7 @@
 from flask import Flask, jsonify
 import os
 from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
 
 app = Flask(__name__)
 
@@ -15,4 +16,4 @@ def home():
     return jsonify({"message": "Hello from Flask backend!"})
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(debug=True)
