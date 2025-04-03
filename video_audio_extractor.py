@@ -9,7 +9,7 @@ def extract_audio(video_file, audio_file):
         print(f"An error occurred: {e}")
 
 # Example usage
-video_file = 'friends_phonebill.mp4'  
-audio_file = 'output_audio.mp3'  
-
-extract_audio(video_file, audio_file)
+if __name__ == "__main__":
+    video_file = "input_video.mp4"
+    audio_file = "output_audio.mp3"
+    extract_audio(video_file, audio_file)
