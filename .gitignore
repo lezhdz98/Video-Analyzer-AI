@@ -2,3 +2,5 @@
 .env
 __pycache__/
 requirements.in
+*.mp4
+*.mp3
