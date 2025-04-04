@@ -3,4 +3,6 @@
 
 
 # On macOS
-```bash brew install ffmpeg ```
+```bash
+brew install ffmpeg 
+```
