@@ -1,9 +1,14 @@
 import ffmpeg
+import os
 
 def extract_audio(video_file, audio_file):
     try:
-        # Extract audio from the video file
-        ffmpeg.input(video_file).output(audio_file).run()
+        # Remove existing audio file if it exists to avoid overwrite prompt
+        if os.path.exists(audio_file):
+            os.remove(audio_file)
+
+        # Extract audio from the video file, with overwrite enabled
+        ffmpeg.input(video_file).output(audio_file).run(overwrite_output=True)
         print(f"Audio extracted successfully to {audio_file}")
     except ffmpeg.Error as e:
         print(f"An error occurred: {e}")
