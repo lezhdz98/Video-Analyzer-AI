@@ -7,7 +7,7 @@ import base64
 TRANSCRIBE_URL = "http://localhost:5000/transcribe"
 SUMMARY_URL = "http://localhost:5000/summarize_custom"
 TAGS_URL = "http://localhost:5000/generate_tags"
-FRAMES_URL = "http://localhost:5000/extract_frames"
+FRAMES_URL = "http://localhost:5000/frames_description"
 
 # Set up the layout for the Streamlit app
 st.title("🎥 AI Video Analyzer")
@@ -110,6 +110,7 @@ if uploaded_video is not None:
             st.stop()
 
         # -- Extract frames from the video
+        # -- Extract frames from the video
         with st.spinner("🖼️ Extracting frames..."):
             frames_payload = {"video_path": st.session_state["video_path"]}
             frames_response = requests.post(FRAMES_URL, json=frames_payload)
@@ -120,10 +121,17 @@ if uploaded_video is not None:
 
             if frames:
                 st.markdown("### 🖼️ Key Frames")
+
                 for frame in frames:
                     # Decode the base64 image string and pass it to st.image
                     image_data = base64.b64decode(frame["image"])
-                    st.image(image_data, caption=frame.get("name", "Frame"), use_container_width=True)
+
+                    # Get the description for the frame (from the backend analysis)
+                    description = frame.get("description", "No description available.")
+
+                    # Display the frame with its description
+                    st.image(image_data, caption=frame.get("name"), use_container_width=True)
+                    st.write(f"**Description**: {description}")
             else:
                 st.info("No frames returned.")
         else:
