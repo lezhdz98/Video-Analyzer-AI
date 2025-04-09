@@ -1,7 +1,10 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import os
+import base64
 from video_audio_extractor import extract_audio
 from transcribe_audio import transcribe_audio
+from frame_extractor import extract_frames
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.prompts import ChatPromptTemplate
@@ -21,29 +24,10 @@ print(f"OpenAI API Key: {api_key}")
 
 # Initialize Flask app
 app = Flask(__name__)
+CORS(app)
 
 # Initialize the chat model with the API key
 model = init_chat_model("gpt-4o-mini", model_provider="openai", openai_api_key=api_key)
-
-# Define system template for video analysis
-system_template = "Analyze the following video transcript and summarize the key points."
-
-# Define user template for transcript
-prompt_template = ChatPromptTemplate.from_messages(
-    [("system", system_template), ("user", "{transcript}")]
-)
-
-# Detailed Summary System Prompt
-detailed_prompt_template = ChatPromptTemplate.from_messages([
-    ("system", "Analyze the following video transcript and summarize the key points."),
-    ("user", "{transcript}")
-])
-
-# Concise Summary System Prompt
-concise_prompt_template = ChatPromptTemplate.from_messages([
-    ("system", "Summarize the following transcript in 100 words."),
-    ("user", "{transcript}")
-])
 
 # Folder to save uploaded videos and extracted audio
 UPLOAD_FOLDER = 'uploads'
@@ -60,14 +44,14 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 # Function to analyze video transcript
-def generate_summary(transcript, prompt_template):
+def analyze_transcript(transcript, prompt_template):
     prompt = prompt_template.format_messages(transcript=transcript)
     response = model.invoke(prompt)
     return response.content
 
 # Route for transcribing video and generating summary
 @app.route('/transcribe', methods=['POST'])
-def transcribe_video():
+def transcribe():
     if 'video' not in request.files:
         return jsonify({"error": "No video file provided"}), 400
 
@@ -85,27 +69,107 @@ def transcribe_video():
 
     return jsonify({"transcript": transcript}), 200
 
-# Route for detailed summary
-@app.route('/summarize_detailed', methods=['POST'])
-def summarize_detailed():
+# Route for custom summary generation
+@app.route('/summarize_custom', methods=['POST'])
+def summarize_custom():
+    data = request.get_json()
+    transcript = data.get("transcript")
+    summary_type = data.get("summary_type", "Detailed")
+    language = data.get("language", "English")
+    style = data.get("style", "Formal")
+
+    if not transcript:
+        return jsonify({"error": "Transcript is required"}), 400
+
+    if summary_type.lower() == "detailed":
+        summary_template = "Detailed summary with key points."
+    else:
+        summary_template = "Concise summary in 100 words."
+
+    # Generate system message for custom summary based on input
+    system_message = f'''
+        You are a helpful assistant that generates summaries based on user input.
+        The user will provide a transcript of a video, and you will summarize it.
+        Please write a summary of the given transcript with the following characteristics:
+        - Style: {style}
+        - Summary Type: {summary_template}
+        - Language: {language}
+    '''
+    prompt_template = ChatPromptTemplate.from_messages([
+        ("system", system_message),
+        ("user", "{transcript}")
+    ])
+
+    result = analyze_transcript(transcript, prompt_template)
+    return jsonify({"summary": result}), 200
+
+# Route for generating tags from transcript
+@app.route('/generate_tags', methods=['POST'])
+def generate_tags():
     data = request.get_json()
     transcript = data.get("transcript")
     if not transcript:
         return jsonify({"error": "Transcript is required"}), 400
 
-    analysis = generate_summary(transcript, detailed_prompt_template)
-    return jsonify({"analysis": analysis}), 200
+    # Step 1: Define Schema
+    schema = {
+        "title": "TranscriptTags",
+        "description": "Extracted tags from a transcript.",
+        "type": "object",
+        "properties": {
+            "tags": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                },
+                "description": "A list of relevant keywords or tags from the transcript.",
+            },
+        },
+        "required": ["tags"]
+    }
 
-# Route for concise summary
-@app.route('/summarize_concise', methods=['POST'])
-def summarize_concise():
+    # Step 2: Wrap model with structured output
+    structured_lm = model.with_structured_output(schema)
+
+    # Step 3: Prompt template
+    prompt_template = ChatPromptTemplate.from_messages([
+        ("system", "Extract 5 to 10 relevant tags (keywords) from the transcript."),
+        ("user", "{transcript}")
+    ])
+    
+    # Step 4: Build and invoke chain
+    chain = prompt_template | structured_llm 
+    result = chain.invoke({"transcript": transcript})
+
+    # Step 5: Return clean JSON
+    return jsonify(result), 200
+
+# Route for extracting frames from a video
+@app.route('/extract_frames', methods=['POST'])
+def get_frames():
     data = request.get_json()
-    transcript = data.get("transcript")
-    if not transcript:
-        return jsonify({"error": "Transcript is required"}), 400
+    video_path = data.get("video_path")
+    if not video_path or not os.path.exists(video_path):
+        return jsonify({"error": "Invalid video path"}), 400
 
-    summary = generate_summary(transcript, concise_prompt_template)
-    return jsonify({"summary": summary}), 200
+    # Create directory for storing frames (inside the 'frames' folder directly)
+    os.makedirs("frames", exist_ok=True)
+
+    # Extract frames and return as base64-encoded images
+    extract_frames(video_path, "frames", num_frames=10)
+
+    frames = []
+
+    # Read and encode each frame as base64
+    for filename in sorted(os.listdir("frames")):
+        if filename.endswith(".jpg") or filename.endswith(".png"):  # Check if it's a frame image
+            with open(os.path.join("frames", filename), "rb") as img_file:
+                encoded = base64.b64encode(img_file.read()).decode('utf-8')
+                frames.append({"name": filename, "image": encoded})
+
+    print(f"Extracted {len(frames)} frames from {video_path}")
+
+    return jsonify({"frames": frames})
 
 if __name__ == '__main__':
     app.run(debug=True)
