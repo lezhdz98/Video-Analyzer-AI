@@ -19,15 +19,15 @@ api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
     raise ValueError("OpenAI API key is not set in the environment variables.")
 
-# Optional: print the API key to verify it's loaded correctly
-print(f"OpenAI API Key: {api_key}")
-
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
 
 # Initialize the chat model with the API key
 model = init_chat_model("gpt-4o-mini", model_provider="openai", openai_api_key=api_key)
+
+# Initialize the vision model with the API key
+#model_vision = init_chat_model( model="gpt-4o-mini", model_provider="openai", openai_api_key=api_key)
 
 # Folder to save uploaded videos and extracted audio
 UPLOAD_FOLDER = 'uploads'
@@ -48,6 +48,129 @@ def analyze_transcript(transcript, prompt_template):
     prompt = prompt_template.format_messages(transcript=transcript)
     response = model.invoke(prompt)
     return response.content
+
+def get_frames(video_path):
+    # Create directory for storing frames (inside the 'frames' folder directly)
+    os.makedirs("frames", exist_ok=True)
+
+    # Extract frames
+    extract_frames(video_path, "frames", num_frames=10)
+
+    frames = []
+
+    # Read and encode each frame as base64
+    for filename in sorted(os.listdir("frames")):
+        print(f"Processing file: {filename}")
+        if filename.endswith(".jpg") or filename.endswith(".png"):  # Check if it's a frame image
+            with open(os.path.join("frames", filename), "rb") as img_file:
+                encoded = base64.b64encode(img_file.read()).decode('utf-8')
+                frames.append({"name": filename, "image": encoded})
+
+    print(f"Extracted {len(frames)} frames from {video_path}")
+
+    return frames
+
+def analyze_frames(frames):
+    # Step 1: Define the schema for structured output
+    schema = {
+        "title": "DescriptionFrames",
+        "description": "Frames description with vision",
+        "type": "object",
+        "properties": {
+            "frames": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "image": {
+                            "type": "string",
+                            "description": "Image file name"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Description of the visual content"
+                        }
+                    },
+                    "required": ["image", "description"]
+                },
+                "description": "A list of frame descriptions"
+            }
+        },
+        "required": ["frames"]
+    }
+
+    # Step 2: Wrap the model to produce structured output
+    structured_lm = model.with_structured_output(schema)
+
+    # Step 3: Prompt template (multi-modal)
+    prompt_template = ChatPromptTemplate.from_messages([
+        ("system", "You are a helpful assistant that describes the content of each image frame. Please provide a description in less than 20 words."),
+        ("user", "{image_prompt}")
+    ])
+
+    chain = prompt_template | structured_lm
+
+    # Step 4: Analyze each frame individually and collect results
+    results = []
+    for frame in frames:
+        base64_image = frame["image"]
+        image_name = frame["name"]
+
+        # Debug: Check if the base64 image is different for each frame
+        #print(f"Base64 for {image_name}: {base64_image[:50]}...")  # Print a part of the base64 for comparison
+        #print len(base64_image)
+        print(f"Analyzing frame: {image_name}")
+        print(f"Base64 length: {len(base64_image)}")
+
+        image_prompt = [
+            {
+                "type": "text", 
+                "text": f'''
+                            Describe this frame: {image_name}.
+                            Focus on the key elements that make this frame unique. 
+                            What specific objects, colors, and features stand out in this scene? 
+                            What mood or atmosphere does this frame convey? 
+                            Describe the details of the scene, such as people, animals, nature, objects, weather, or any movement if visible.
+                        '''
+            },
+            {
+                "type": "image_url", 
+                "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+            }
+        ]
+
+        # Invoke the vision model
+        response = chain.invoke({"image_prompt": image_prompt})
+
+
+        print(f"Response for {image_name}: {response}")
+        # Append the result
+        results.append({
+            "image": image_name,
+            "description": response.get("frames", [{}])[0].get("description", "No description found.")
+        })
+
+    # Step 5: Return full structured result
+    print("Structured result:", results)
+    print(f"Analyzed {len(results)} frames.")
+    return {"frames": results}
+
+def holistic_summary(transcript, frames_analysis):
+    
+    # Define the holistic summary prompt
+    system_message = '''
+        You are a helpful assistant that generates a holistic summary based on video content.
+        The user will provide a transcript and frames from a video, and you will summarize it.
+        Please write a summary of the given transcript and frames.
+    '''
+    
+    prompt_template = ChatPromptTemplate.from_messages([
+        ("system", system_message),
+        ("user", "Transcript: {transcript} Frames: {frames}")
+    ])
+    
+    result = analyze_transcript(transcript, prompt_template)
+    return result
 
 # Route for transcribing video and generating summary
 @app.route('/transcribe', methods=['POST'])
@@ -129,7 +252,7 @@ def generate_tags():
     }
 
     # Step 2: Wrap model with structured output
-    structured_lm = model.with_structured_output(schema)
+    structured_llm = model.with_structured_output(schema)
 
     # Step 3: Prompt template
     prompt_template = ChatPromptTemplate.from_messages([
@@ -144,32 +267,25 @@ def generate_tags():
     # Step 5: Return clean JSON
     return jsonify(result), 200
 
-# Route for extracting frames from a video
-@app.route('/extract_frames', methods=['POST'])
-def get_frames():
+# Route for extracting frames and analyzing them
+@app.route('/frames_description', methods=['POST'])
+def frames_analysis():
     data = request.get_json()
     video_path = data.get("video_path")
     if not video_path or not os.path.exists(video_path):
         return jsonify({"error": "Invalid video path"}), 400
 
-    # Create directory for storing frames (inside the 'frames' folder directly)
-    os.makedirs("frames", exist_ok=True)
+    # Step 1: Extract + encode frames
+    frames = get_frames(video_path)
 
-    # Extract frames and return as base64-encoded images
-    extract_frames(video_path, "frames", num_frames=10)
+    # Step 2: Analyze frames
+    analysis = analyze_frames(frames) 
 
-    frames = []
+    # Step 4: Merge base64 back into results
+    for i, frame in enumerate(analysis["frames"]):
+        frame["image"] = frames[i]["image"]  # add the base64 back for Streamlit to render
 
-    # Read and encode each frame as base64
-    for filename in sorted(os.listdir("frames")):
-        if filename.endswith(".jpg") or filename.endswith(".png"):  # Check if it's a frame image
-            with open(os.path.join("frames", filename), "rb") as img_file:
-                encoded = base64.b64encode(img_file.read()).decode('utf-8')
-                frames.append({"name": filename, "image": encoded})
-
-    print(f"Extracted {len(frames)} frames from {video_path}")
-
-    return jsonify({"frames": frames})
+    return jsonify(analysis)
 
 if __name__ == '__main__':
     app.run(debug=True)
