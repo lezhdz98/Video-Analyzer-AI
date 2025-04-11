@@ -8,6 +8,7 @@ TRANSCRIBE_URL = "http://localhost:5000/transcribe"
 SUMMARY_URL = "http://localhost:5000/summarize_custom"
 TAGS_URL = "http://localhost:5000/generate_tags"
 FRAMES_URL = "http://localhost:5000/frames_description"
+HOLISTIC_SUMMARY_URL = "http://localhost:5000/holistic_summary"
 
 # Set up the layout for the Streamlit app
 st.title("🎥 AI Video Analyzer")
@@ -23,7 +24,7 @@ if "last_uploaded_filename" not in st.session_state:
 # Reset session state if a different video is uploaded
 if uploaded_video is not None:
     if st.session_state["last_uploaded_filename"] != uploaded_video.name:
-        for key in ["transcript", "custom_summary", "frames"]:
+        for key in ["transcript", "custom_summary", "frames", "tags"]:
             st.session_state.pop(key, None)
 
     st.session_state["last_uploaded_filename"] = uploaded_video.name
@@ -110,11 +111,10 @@ if uploaded_video is not None:
             st.stop()
 
         # -- Extract frames from the video
-        # -- Extract frames from the video
         with st.spinner("🖼️ Extracting frames..."):
             frames_payload = {
                 "video_path": st.session_state["video_path"],
-                "language": language  #include selected language from summary form
+                "language": language  # Include selected language from summary form
             }
             frames_response = requests.post(FRAMES_URL, json=frames_payload)
 
@@ -124,18 +124,40 @@ if uploaded_video is not None:
 
             if frames:
                 st.markdown("### 🖼️ Key Frames")
+                with st.expander("📄 Show Frames"):
+                    for frame in frames:
+                        # Decode the base64 image string and pass it to st.image
+                        image_data = base64.b64decode(frame["image"])
 
-                for frame in frames:
-                    # Decode the base64 image string and pass it to st.image
-                    image_data = base64.b64decode(frame["image"])
+                        # Get the description for the frame (from the backend analysis)
+                        description = frame.get("description", "No description available.")
 
-                    # Get the description for the frame (from the backend analysis)
-                    description = frame.get("description", "No description available.")
-
-                    # Display the frame with its description
-                    st.image(image_data, caption=frame.get("name"), use_container_width=True)
-                    st.write(f"**Description**: {description}")
+                        # Display the frame with its description
+                        st.image(image_data, caption=frame.get("name"), use_container_width=True)
+                        st.write(f"**Description**: {description}")
             else:
                 st.info("No frames returned.")
         else:
             st.error("❌ Frame extraction failed.")
+            st.stop()
+
+        # -- Generate holistic summary from transcript + frames
+        if "transcript" in st.session_state and "frames" in st.session_state:
+            st.markdown("### 📘 Holistic Summary (textual + visual analysis)")
+
+            with st.spinner("Creating a holistic summary combining textual and visual analysis..."):
+                holistic_payload = {
+                    "transcript": st.session_state["transcript"],
+                    "frames": st.session_state["frames"],
+                    "language": language
+                }
+                holistic_response = requests.post(HOLISTIC_SUMMARY_URL, json=holistic_payload)
+
+            if holistic_response.status_code == 200:
+                holistic_summary = holistic_response.json().get("holistic_summary", "")
+                st.success("✅ Holistic summary generated!")
+
+                with st.expander("📄 Show Holistic Summary"):
+                    st.write(holistic_summary)
+            else:
+                st.error("❌ Holistic summary generation failed.")
