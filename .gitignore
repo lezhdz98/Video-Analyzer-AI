@@ -8,3 +8,4 @@ requirements.in
 /audio_files
 /uploads
 /frames
+.DS_Store
