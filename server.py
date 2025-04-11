@@ -75,7 +75,7 @@ def get_frames(video_path):
 #langsmith trace
 @traceable(name="OpenAI Frame Description")
 def analysis_with_openAI_vanilla(frames, language="English"):
-    print("Using OpenAI for analysis...")
+    print("Using OpenAI for frame analysis...")
 
     client = OpenAI(api_key=api_key)
     results = []
@@ -168,27 +168,6 @@ def analysis_with_openAI_vanilla(frames, language="English"):
             })
 
     return results
-
-def holistic_summary(transcript, frames_analysis):
-    
-    # Define the holistic summary prompt
-    system_message = '''
-        You are a helpful assistant that generates a holistic summary based on video content.
-        The user will provide a transcript and frames with description from a video, and you will summarize it.
-        Please write a summary of the given transcript and frames.
-
-        Please write a summary of the given transcript and frames description with the following characteristics:
-        - Style: {style}
-        - Summary Type: {summary_template}
-        - Language: {language}
-    '''
-    prompt_template = ChatPromptTemplate.from_messages([
-        ("system", system_message),
-        ("user", "Transcript: {transcript} Frames: {frames}")
-    ])
-    
-    result = analyze_transcript(transcript, prompt_template)
-    return result
 
 # Route for transcribing video and generating summary
 @app.route('/transcribe', methods=['POST'])
@@ -306,15 +285,69 @@ def frames_analysis():
         result["image"] = frames[i]["image"]  # Add base64-encoded image to each result
 
     # Print the analysis results for debugging purposes
-    print("Analysis Results:")
-    for result in analysis_results:
-        short_image = result["image"][:30] + "..."  # only print first 30 chars
-        print(f"[{result['image_name']}] {result['description']} (image: {short_image})")
+    # print("Analysis Results:")
+    # for result in analysis_results:
+    #     short_image = result["image"][:30] + "..."  # only print first 30 chars
+    #     print(f"[{result['image_name']}] {result['description']} (image: {short_image})")
     
     # Step 4: Return in wrapped JSON format
     return jsonify({
         "frames": analysis_results
     })
+
+from flask import request, jsonify
+from langchain.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+
+# Route for holistic summary generation
+@app.route("/holistic_summary", methods=["POST"])
+def holistic_summary():
+    data = request.get_json()
+    transcript = data.get("transcript", "")
+    frames = data.get("frames", [])
+    language = data.get("language", "English")
+
+    if not transcript or not frames:
+        return jsonify({"error": "Transcript and frame descriptions are required"}), 400
+
+    # Combine frame descriptions
+    frame_descriptions = "\n".join([
+        f"{frame.get('image_name', 'Frame')}:\n{frame.get('description', '')}"
+        for frame in frames
+    ])
+
+    # Compose the full content to summarize
+    full_content = f"Transcript:\n{transcript}\n\nFrame Descriptions:\n{frame_descriptions}"
+
+    # System prompt template
+    system_message = f'''
+        You are an expert media analyst. Given a full transcript and detailed visual descriptions from a video, 
+        write a comprehensive and holistic summary that combines both elements. Write the summary in {language}.
+
+        Follow these steps in your analysis:
+
+        1. **Identify the Main Topic**: Start by identifying the central topic or theme of the video.
+        2. **Classify the Video Type**: Determine the type of video (e.g., tutorial, documentary, interview, entertainment, etc.), based on both the transcript and visual content.
+        3. **Transcript Summary**: Provide a concise summary of the transcript, capturing the key points and the overall message of the spoken content.
+        4. **Frame Analysis**: Summarize the key frames from the video, highlighting the most significant visual moments, and describe their relevance to the content of the video.
+        5. **Final Holistic Summary**: Integrate the topic, video type, transcript summary, and frame analysis into a unified, informative summary that reflects both the visual and verbal content. The summary should be concise yet comprehensive, capturing the essence of the video in a clear and informative manner.
+
+        Keep the summary concise but informative, and ensure that it covers all the important aspects of the video content.
+    '''
+
+    # Prepare prompt using ChatPromptTemplate
+    prompt_template = ChatPromptTemplate.from_messages([
+        ("system", system_message),
+        ("user", "{content}")
+    ])
+
+    # Format the message and invoke the model
+    prompt = prompt_template.format_messages(content=full_content)
+    response = model.invoke(prompt)
+
+    # Get the result and return it
+    result = response.content  # Assuming the response has 'content' field
+    return jsonify({"holistic_summary": result}), 200
 
 if __name__ == '__main__':
     app.run(debug=True)
