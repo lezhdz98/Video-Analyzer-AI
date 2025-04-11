@@ -112,7 +112,10 @@ if uploaded_video is not None:
         # -- Extract frames from the video
         # -- Extract frames from the video
         with st.spinner("🖼️ Extracting frames..."):
-            frames_payload = {"video_path": st.session_state["video_path"]}
+            frames_payload = {
+                "video_path": st.session_state["video_path"],
+                "language": language  #include selected language from summary form
+            }
             frames_response = requests.post(FRAMES_URL, json=frames_payload)
 
         if frames_response.status_code == 200:

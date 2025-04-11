@@ -11,6 +11,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from werkzeug.utils import secure_filename
 import json
 from openai import OpenAI
+from langsmith.run_helpers import traceable
 
 # Load environment variables from .env file
 load_dotenv()
@@ -71,7 +72,9 @@ def get_frames(video_path):
 
     return frames
 
-def analysis_with_openAI_vanilla(frames):
+#langsmith trace
+@traceable(name="OpenAI Frame Description")
+def analysis_with_openAI_vanilla(frames, language="English"):
     print("Using OpenAI for analysis...")
 
     client = OpenAI(api_key=api_key)
@@ -112,7 +115,7 @@ def analysis_with_openAI_vanilla(frames):
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a helpful assistant that describes the content of each image frame. You always responds using the 'describe_image' tool."
+                        "content": "You are a helpful assistant that describes the content of each image frame in the given language: {language}. You always responds using the 'describe_image' tool."
                     },
                     {
                         "role": "user",
@@ -120,6 +123,7 @@ def analysis_with_openAI_vanilla(frames):
                             {"type": "text", 
                             "text": f'''
                                     Describe this image frame: {image_name}.
+                                    Language of the description: {language}.
                                     Describe it in less than 50 words.
                                     Focus on the key elements that make this frame unique. 
                                     What specific objects, colors, and features stand out in this scene? 
@@ -170,10 +174,14 @@ def holistic_summary(transcript, frames_analysis):
     # Define the holistic summary prompt
     system_message = '''
         You are a helpful assistant that generates a holistic summary based on video content.
-        The user will provide a transcript and frames from a video, and you will summarize it.
+        The user will provide a transcript and frames with description from a video, and you will summarize it.
         Please write a summary of the given transcript and frames.
+
+        Please write a summary of the given transcript and frames description with the following characteristics:
+        - Style: {style}
+        - Summary Type: {summary_template}
+        - Language: {language}
     '''
-    
     prompt_template = ChatPromptTemplate.from_messages([
         ("system", system_message),
         ("user", "Transcript: {transcript} Frames: {frames}")
@@ -282,6 +290,7 @@ def generate_tags():
 def frames_analysis():
     data = request.get_json()
     video_path = data.get("video_path")
+    language = data.get("language", "English") 
 
     if not video_path or not os.path.exists(video_path):
         return jsonify({"error": "Invalid video path"}), 400
@@ -290,7 +299,7 @@ def frames_analysis():
     frames = get_frames(video_path)
 
     # Step 2: Analyze frames using OpenAI tool-calling function
-    analysis_results = analysis_with_openAI_vanilla(frames)
+    analysis_results = analysis_with_openAI_vanilla(frames, language)
 
     # Step 3: Add base64 back into each frame for frontend display
     for i, result in enumerate(analysis_results):
