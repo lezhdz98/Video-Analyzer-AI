@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.prompts import ChatPromptTemplate
 from werkzeug.utils import secure_filename
+import json
+from openai import OpenAI
 
 # Load environment variables from .env file
 load_dotenv()
@@ -60,7 +62,6 @@ def get_frames(video_path):
 
     # Read and encode each frame as base64
     for filename in sorted(os.listdir("frames")):
-        print(f"Processing file: {filename}")
         if filename.endswith(".jpg") or filename.endswith(".png"):  # Check if it's a frame image
             with open(os.path.join("frames", filename), "rb") as img_file:
                 encoded = base64.b64encode(img_file.read()).decode('utf-8')
@@ -70,16 +71,19 @@ def get_frames(video_path):
 
     return frames
 
-def analyze_frames(frames):
-    # Step 1: Define the schema for structured output
-    schema = {
-        "title": "DescriptionFrames",
-        "description": "Frames description with vision",
-        "type": "object",
-        "properties": {
-            "frames": {
-                "type": "array",
-                "items": {
+def analysis_with_openAI_vanilla(frames):
+    print("Using OpenAI for analysis...")
+
+    client = OpenAI(api_key=api_key)
+    results = []
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "describe_image",
+                "description": "Generate a description for an image frame.",
+                "parameters": {
                     "type": "object",
                     "properties": {
                         "image": {
@@ -91,69 +95,75 @@ def analyze_frames(frames):
                             "description": "Description of the visual content"
                         }
                     },
-                    "required": ["image", "description"]
-                },
-                "description": "A list of frame descriptions"
+                    "required": ["image", "description"],
+                    "additionalProperties": False
+                }
             }
-        },
-        "required": ["frames"]
-    }
+        }
+    ]
 
-    # Step 2: Wrap the model to produce structured output
-    structured_lm = model.with_structured_output(schema)
-
-    # Step 3: Prompt template (multi-modal)
-    prompt_template = ChatPromptTemplate.from_messages([
-        ("system", "You are a helpful assistant that describes the content of each image frame. Please provide a description in less than 20 words."),
-        ("user", "{image_prompt}")
-    ])
-
-    chain = prompt_template | structured_lm
-
-    # Step 4: Analyze each frame individually and collect results
-    results = []
     for frame in frames:
-        base64_image = frame["image"]
         image_name = frame["name"]
+        base64_image = frame["image"]
 
-        # Debug: Check if the base64 image is different for each frame
-        #print(f"Base64 for {image_name}: {base64_image[:50]}...")  # Print a part of the base64 for comparison
-        #print len(base64_image)
-        print(f"Analyzing frame: {image_name}")
-        print(f"Base64 length: {len(base64_image)}")
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful assistant that describes the content of each image frame. You always responds using the 'describe_image' tool."
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", 
+                            "text": f'''
+                                    Describe this image frame: {image_name}.
+                                    Describe it in less than 50 words.
+                                    Focus on the key elements that make this frame unique. 
+                                    What specific objects, colors, and features stand out in this scene? 
+                                    What mood or atmosphere does this frame convey? 
+                                    Describe the details of the scene, such as people, animals, nature, objects, weather, or any movement if visible.
+                                    '''
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                },
+                            },
+                        ]
+                    }
+                ],
+                tools=tools,
+                tool_choice="auto"
+            )
 
-        image_prompt = [
-            {
-                "type": "text", 
-                "text": f'''
-                            Describe this frame: {image_name}.
-                            Focus on the key elements that make this frame unique. 
-                            What specific objects, colors, and features stand out in this scene? 
-                            What mood or atmosphere does this frame convey? 
-                            Describe the details of the scene, such as people, animals, nature, objects, weather, or any movement if visible.
-                        '''
-            },
-            {
-                "type": "image_url", 
-                "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
-            }
-        ]
+            tool_calls = response.choices[0].message.tool_calls
+            if tool_calls and len(tool_calls) > 0:
+                tool_response = tool_calls[0].function.arguments
+                tool_data = json.loads(tool_response)
 
-        # Invoke the vision model
-        response = chain.invoke({"image_prompt": image_prompt})
+                results.append({
+                    "image_name": tool_data["image"],
+                    "description": tool_data["description"]
+                })
+            else:
+                print(f"No tool call detected for {image_name}.")
+                results.append({
+                    "image_name": image_name,
+                    "description": "Tool call was not triggered."
+                })
 
+        except Exception as e:
+            print(f"Error analyzing frame {image_name}: {e}")
+            results.append({
+                "image_name": image_name,
+                "description": "Error generating description."
+            })
 
-        print(f"Response for {image_name}: {response}")
-        # Append the result
-        results.append({
-            "image": image_name,
-            "description": response.get("frames", [{}])[0].get("description", "No description found.")
-        })
-
-    # Step 5: Return full structured result
-    print("Structured result:", results)
-    print(f"Analyzed {len(results)} frames.")
-    return {"frames": results}
+    return results
 
 def holistic_summary(transcript, frames_analysis):
     
@@ -272,20 +282,30 @@ def generate_tags():
 def frames_analysis():
     data = request.get_json()
     video_path = data.get("video_path")
+
     if not video_path or not os.path.exists(video_path):
         return jsonify({"error": "Invalid video path"}), 400
 
-    # Step 1: Extract + encode frames
+    # Step 1: Extract and encode frames
     frames = get_frames(video_path)
 
-    # Step 2: Analyze frames
-    analysis = analyze_frames(frames) 
+    # Step 2: Analyze frames using OpenAI tool-calling function
+    analysis_results = analysis_with_openAI_vanilla(frames)
 
-    # Step 4: Merge base64 back into results
-    for i, frame in enumerate(analysis["frames"]):
-        frame["image"] = frames[i]["image"]  # add the base64 back for Streamlit to render
+    # Step 3: Add base64 back into each frame for frontend display
+    for i, result in enumerate(analysis_results):
+        result["image"] = frames[i]["image"]  # Add base64-encoded image to each result
 
-    return jsonify(analysis)
+    # Print the analysis results for debugging purposes
+    print("Analysis Results:")
+    for result in analysis_results:
+        short_image = result["image"][:30] + "..."  # only print first 30 chars
+        print(f"[{result['image_name']}] {result['description']} (image: {short_image})")
+    
+    # Step 4: Return in wrapped JSON format
+    return jsonify({
+        "frames": analysis_results
+    })
 
 if __name__ == '__main__':
     app.run(debug=True)
