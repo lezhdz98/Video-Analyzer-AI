@@ -2,3 +2,10 @@
 .env
 __pycache__/
 requirements.in
+*.mp4
+*.mp3
+*.jpg
+/audio_files
+/uploads
+/frames
+.DS_Store
