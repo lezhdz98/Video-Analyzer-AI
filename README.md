@@ -65,8 +65,8 @@ This app enables users to upload videos and receive:
 
 ### Install FFmpeg (Linux)
 ```bash
-sudo apt update
-sudo apt install ffmpeg
+   sudo apt update
+   sudo apt install ffmpeg
 ```
 
 ### Install FFmpeg (Windows)
