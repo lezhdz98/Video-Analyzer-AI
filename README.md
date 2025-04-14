@@ -63,6 +63,12 @@ This app enables users to upload videos and receive:
     brew install ffmpeg
 ```
 
+### Install FFmpeg (Linux)
+```bash
+sudo apt update
+sudo apt install ffmpeg
+```
+
 ### Install FFmpeg (Windows)
 1. Download FFmpeg from [https://ffmpeg.org/download.html](https://ffmpeg.org/download.html).
 2. Extract the ZIP archive to a folder, e.g., `C:\ffmpeg`.
@@ -139,9 +145,3 @@ Set the following in a `.env` file or your system environment:
     ├── requirements.txt
     └── .env                        # API keys and config
 ```
-
-
-
-
-
-
