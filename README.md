@@ -53,7 +53,7 @@ This app enables users to upload videos and receive:
 
 ---
 
-## 🛠️ Prerequisites
+## Prerequisites
 
 - **Python**: 3.12.7  
 - **FFmpeg**: Required for audio and frame extraction
