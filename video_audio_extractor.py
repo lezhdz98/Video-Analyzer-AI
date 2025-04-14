@@ -2,6 +2,17 @@ import ffmpeg
 import os
 
 def extract_audio(video_file, audio_file):
+    """
+    Extract audio from a video file using ffmpeg.
+
+    Parameters:
+    - video_file: path to the input video file
+    - audio_file: path where the extracted audio will be saved
+
+    Notes:
+    - Overwrites the audio file if it already exists.
+    - Prints a success message or error details.
+    """
     try:
         # Remove existing audio file if it exists to avoid overwrite prompt
         if os.path.exists(audio_file):

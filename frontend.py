@@ -10,6 +10,29 @@ TAGS_URL = "http://localhost:5000/generate_tags"
 FRAMES_URL = "http://localhost:5000/frames_description"
 HOLISTIC_SUMMARY_URL = "http://localhost:5000/holistic_summary"
 
+def send_post_request(url, payload=None, files=None):
+    """
+    Helper function to send a POST request to the given URL.
+
+    Args:
+        url (str): The API endpoint.
+        payload (dict, optional): JSON payload for the request.
+        files (dict, optional): Files to upload (used for transcription).
+
+    Returns:
+        Response object or None if an error occurs.
+    """
+    try:
+        if files:
+            response = requests.post(url, files=files)
+        else:
+            response = requests.post(url, json=payload)
+        response.raise_for_status()
+        return response
+    except requests.exceptions.RequestException as e:
+        st.error(f"⚠️ Request to {url} failed: {e}")
+        return None
+
 # Set up the layout for the Streamlit app
 st.title("🎥 AI Video Analyzer")
 st.markdown("#### Upload a video to get a custom summary, transcription, and key frames.")
@@ -21,26 +44,28 @@ uploaded_video = st.file_uploader("📤 Choose a video file", type=["mp4", "avi"
 if "last_uploaded_filename" not in st.session_state:
     st.session_state["last_uploaded_filename"] = ""
 
-# Reset session state if a different video is uploaded
+# Handle new video uploads
 if uploaded_video is not None:
     if st.session_state["last_uploaded_filename"] != uploaded_video.name:
         for key in ["transcript", "custom_summary", "frames", "tags"]:
             st.session_state.pop(key, None)
 
     st.session_state["last_uploaded_filename"] = uploaded_video.name
-
     video_path = os.path.join("uploads", uploaded_video.name)
 
-    # Save the uploaded video to disk
-    with open(video_path, "wb") as f:
-        f.write(uploaded_video.read())
+    # Save video
+    try:
+        with open(video_path, "wb") as f:
+            f.write(uploaded_video.read())
+    except Exception as e:
+        st.error(f"Error saving uploaded video: {e}")
+        st.stop()
 
     st.session_state["video_path"] = video_path  # Track video path in session state
     st.video(video_path)
 
-    # -- Step 1: Show the summary form
+    # --- Summary Form ---
     st.markdown("### 🧠 Customize Your Summary")
-
     with st.form("summary_form"):
         col1, col2, col3 = st.columns(3)
 
@@ -55,21 +80,20 @@ if uploaded_video is not None:
 
         submitted = st.form_submit_button("⚙️ Analyze Video")
 
-    # -- Step 2: Process the video 
     if submitted:
-        # -- Transcribe the video
+        # Transcription
         with st.spinner("⏳ Transcribing video..."):
             files = {'video': open(st.session_state["video_path"], 'rb')}
-            transcribe_response = requests.post(TRANSCRIBE_URL, files=files)
+            transcribe_response = send_post_request(TRANSCRIBE_URL, files=files)
 
-        if transcribe_response.status_code == 200:
+        if transcribe_response:
             transcript = transcribe_response.json().get("transcript", "")
             st.session_state["transcript"] = transcript
         else:
-            st.error("❌ Transcription failed.")
+            st.error("❌ Transcript generation failed.")
             st.stop()
 
-        # -- Generate custom summary
+        # Custom summary
         with st.spinner("📝 Generating custom summary..."):
             payload = {
                 "transcript": transcript,
@@ -77,9 +101,9 @@ if uploaded_video is not None:
                 "language": language,
                 "style": style
             }
-            summary_response = requests.post(SUMMARY_URL, json=payload)
+            summary_response = send_post_request(SUMMARY_URL, payload=payload)
 
-        if summary_response.status_code == 200:
+        if summary_response:
             summary = summary_response.json().get("summary", "")
             st.session_state["custom_summary"] = summary
             st.success("✅ Summary generated!")
@@ -92,12 +116,12 @@ if uploaded_video is not None:
         with st.expander("📄 Show Transcript"):
             st.write(transcript)
 
-        # -- Generate tags from the transcript 
+        # Generate Tags
         with st.spinner("🏷️ Generating tags..."):
             tags_payload = {"transcript": transcript}
-            tags_response = requests.post(TAGS_URL, json=tags_payload)
+            tags_response = send_post_request(TAGS_URL, payload=tags_payload)
 
-        if tags_response.status_code == 200:
+        if tags_response:
             tags = tags_response.json().get("tags", [])
             st.session_state["tags"] = tags
             st.success("✅ Tags generated!")
@@ -105,20 +129,20 @@ if uploaded_video is not None:
 
             # Display tags with "#" before each tag
             hashtagged_tags = [f"#{tag.replace(' ', '')}" for tag in tags]
-            st.write(" ".join(hashtagged_tags))  # Join tags into a single string with spaces
+            st.write(" ".join(hashtagged_tags))
         else:
             st.error("❌ Tag generation failed.")
             st.stop()
 
-        # -- Extract frames from the video
+        # Extract and Analyze Frames
         with st.spinner("🖼️ Extracting frames..."):
             frames_payload = {
                 "video_path": st.session_state["video_path"],
                 "language": language  # Include selected language from summary form
             }
-            frames_response = requests.post(FRAMES_URL, json=frames_payload)
+            frames_response = send_post_request(FRAMES_URL, payload=frames_payload)
 
-        if frames_response.status_code == 200:
+        if frames_response:
             frames = frames_response.json().get("frames", [])
             st.session_state["frames"] = frames
 
@@ -141,7 +165,7 @@ if uploaded_video is not None:
             st.error("❌ Frame extraction failed.")
             st.stop()
 
-        # -- Generate holistic summary from transcript + frames
+        # Holistic Summary
         if "transcript" in st.session_state and "frames" in st.session_state:
             st.markdown("### 📘 Holistic Summary (textual + visual analysis)")
 
@@ -151,9 +175,9 @@ if uploaded_video is not None:
                     "frames": st.session_state["frames"],
                     "language": language
                 }
-                holistic_response = requests.post(HOLISTIC_SUMMARY_URL, json=holistic_payload)
+                holistic_response = send_post_request(HOLISTIC_SUMMARY_URL, payload=holistic_payload)
 
-            if holistic_response.status_code == 200:
+            if holistic_response:
                 holistic_summary = holistic_response.json().get("holistic_summary", "")
                 st.success("✅ Holistic summary generated!")
 
@@ -161,3 +185,4 @@ if uploaded_video is not None:
                     st.write(holistic_summary)
             else:
                 st.error("❌ Holistic summary generation failed.")
+                st.stop()

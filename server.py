@@ -1,17 +1,34 @@
+"""
+    Flask app for AI-powered video analysis.
+
+    This application provides several endpoints to:
+    - Transcribe video content
+    - Generate custom summaries and tags from transcripts
+    - Extract image frames and generate AI-based visual descriptions
+    - Generate a holistic summary combining both transcript and visual analysis
+
+    Tech stack:
+    - Flask for API backend
+    - LangChain + OpenAI for NLP tasks
+    - Whisper for audio transcription
+    - Custom utilities for video/audio/frame extraction
+"""
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 import base64
+import json
 from video_audio_extractor import extract_audio
 from transcribe_audio import transcribe_audio
 from frame_extractor import extract_frames
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.prompts import ChatPromptTemplate
-from werkzeug.utils import secure_filename
-import json
-from openai import OpenAI
 from langsmith.run_helpers import traceable
+from langchain_openai import ChatOpenAI
+from werkzeug.utils import secure_filename
+from openai import OpenAI
+
 
 # Load environment variables from .env file
 load_dotenv()
@@ -29,9 +46,6 @@ CORS(app)
 # Initialize the chat model with the API key
 model = init_chat_model("gpt-4o-mini", model_provider="openai", openai_api_key=api_key)
 
-# Initialize the vision model with the API key
-#model_vision = init_chat_model( model="gpt-4o-mini", model_provider="openai", openai_api_key=api_key)
-
 # Folder to save uploaded videos and extracted audio
 UPLOAD_FOLDER = 'uploads'
 AUDIO_FOLDER = 'audio_files'
@@ -44,37 +58,52 @@ app.config['ALLOWED_EXTENSIONS'] = {'mp4', 'avi', 'mov'}
 
 # Helper function to check allowed file extensions
 def allowed_file(filename):
+    """Check if the uploaded file has an allowed extension."""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 # Function to analyze video transcript
 def analyze_transcript(transcript, prompt_template):
-    prompt = prompt_template.format_messages(transcript=transcript)
-    response = model.invoke(prompt)
-    return response.content
+    """Analyze a transcript using a given LangChain prompt template."""
+    try:
+        prompt = prompt_template.format_messages(transcript=transcript)
+        response = model.invoke(prompt)
+        return response.content
+    except Exception as e:
+        print(f"Error analyzing transcript: {e}")
+        return "Error generating summary."
 
 def get_frames(video_path):
-    # Create directory for storing frames (inside the 'frames' folder directly)
-    os.makedirs("frames", exist_ok=True)
+    """
+    Extract 10 frames from a video and encode them in base64 for OpenAI analysis.
+    Returns a list of dictionaries with frame names and base64 strings.
+    """
+    try:
+        os.makedirs("frames", exist_ok=True)
+        extract_frames(video_path, "frames", num_frames=10)
+        frames = []
 
-    # Extract frames
-    extract_frames(video_path, "frames", num_frames=10)
+        # Read and encode each frame as base64
+        for filename in sorted(os.listdir("frames")):
+            if filename.endswith(".jpg") or filename.endswith(".png"):
+                with open(os.path.join("frames", filename), "rb") as img_file:
+                    encoded = base64.b64encode(img_file.read()).decode('utf-8')
+                    frames.append({"name": filename, "image": encoded})
 
-    frames = []
+        print(f"Extracted {len(frames)} frames from {video_path}")
 
-    # Read and encode each frame as base64
-    for filename in sorted(os.listdir("frames")):
-        if filename.endswith(".jpg") or filename.endswith(".png"):  # Check if it's a frame image
-            with open(os.path.join("frames", filename), "rb") as img_file:
-                encoded = base64.b64encode(img_file.read()).decode('utf-8')
-                frames.append({"name": filename, "image": encoded})
-
-    print(f"Extracted {len(frames)} frames from {video_path}")
-
-    return frames
+        return frames
+        
+    except Exception as e:
+        print(f"Error extracting frames: {e}")
+        return []
 
 #langsmith trace
 @traceable(name="OpenAI Frame Description")
 def analysis_with_openAI_vanilla(frames, language="English"):
+    """
+    Analyze video frames using OpenAI's tool-calling to generate descriptions.
+    Returns a list of descriptions associated with each frame.
+    """
     print("Using OpenAI for frame analysis...")
 
     client = OpenAI(api_key=api_key)
@@ -172,26 +201,42 @@ def analysis_with_openAI_vanilla(frames, language="English"):
 # Route for transcribing video and generating summary
 @app.route('/transcribe', methods=['POST'])
 def transcribe():
-    if 'video' not in request.files:
-        return jsonify({"error": "No video file provided"}), 400
+    """
+    Upload a video file, extract audio, and return transcript.
+    """
+    try:
+        if 'video' not in request.files:
+            return jsonify({"error": "No video file provided"}), 400
 
-    video_file = request.files['video']
-    
-    if video_file.filename == '' or not allowed_file(video_file.filename):
-        return jsonify({"error": "Invalid file"}), 400
+        video_file = request.files['video']
 
-    video_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(video_file.filename))
-    video_file.save(video_path)
-    
-    audio_path = os.path.join(AUDIO_FOLDER, f"{os.path.splitext(video_file.filename)[0]}.mp3")
-    extract_audio(video_path, audio_path)
-    transcript = transcribe_audio(audio_path)
+        if video_file.filename == '' or not allowed_file(video_file.filename):
+            return jsonify({"error": "Invalid file type"}), 400
 
-    return jsonify({"transcript": transcript}), 200
+        video_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(video_file.filename))
+        video_file.save(video_path)
+
+        audio_path = os.path.join(AUDIO_FOLDER, f"{os.path.splitext(video_file.filename)[0]}.mp3")
+
+        try:
+            extract_audio(video_path, audio_path)
+            transcript = transcribe_audio(audio_path)
+        except Exception as e:
+            print(f"Error analyzing transcript: {e}")
+            return jsonify({"error": f"Failed to process video: {str(e)}"}), 500
+
+        return jsonify({"transcript": transcript}), 200
+    except Exception as e:
+        print(f"Failed to process video: {e}")
+        return jsonify({"error": f"Failed to process video: {e}"}), 500
 
 # Route for custom summary generation
 @app.route('/summarize_custom', methods=['POST'])
 def summarize_custom():
+    """
+    Generate a custom summary based on user-defined style, language, and detail level.
+    """
+
     data = request.get_json()
     transcript = data.get("transcript")
     summary_type = data.get("summary_type", "Detailed")
@@ -201,10 +246,7 @@ def summarize_custom():
     if not transcript:
         return jsonify({"error": "Transcript is required"}), 400
 
-    if summary_type.lower() == "detailed":
-        summary_template = "Detailed summary with key points."
-    else:
-        summary_template = "Concise summary in 100 words."
+    summary_template = "Detailed summary with key points." if summary_type.lower() == "detailed" else "Concise summary in 100 words."
 
     # Generate system message for custom summary based on input
     system_message = f'''
@@ -221,11 +263,19 @@ def summarize_custom():
     ])
 
     result = analyze_transcript(transcript, prompt_template)
+
+    if result == "Error generating summary.":
+        return jsonify({"error": "Summary generation failed. Please try again later."}), 500
+
     return jsonify({"summary": result}), 200
 
 # Route for generating tags from transcript
 @app.route('/generate_tags', methods=['POST'])
 def generate_tags():
+    """
+    Extract relevant tags (keywords) from a transcript.
+    """
+
     data = request.get_json()
     transcript = data.get("transcript")
     if not transcript:
@@ -259,7 +309,11 @@ def generate_tags():
     
     # Step 4: Build and invoke chain
     chain = prompt_template | structured_llm 
-    result = chain.invoke({"transcript": transcript})
+    try:
+        result = chain.invoke({"transcript": transcript})
+    except Exception as e:
+        print(f"Tag generation failed: {e}")
+        return jsonify({"error": f"Tag generation failed: {str(e)}"}), 500
 
     # Step 5: Return clean JSON
     return jsonify(result), 200
@@ -267,6 +321,9 @@ def generate_tags():
 # Route for extracting frames and analyzing them
 @app.route('/frames_description', methods=['POST'])
 def frames_analysis():
+    """
+    Analyze and describe frames from a video.
+    """
     data = request.get_json()
     video_path = data.get("video_path")
     language = data.get("language", "English") 
@@ -277,31 +334,27 @@ def frames_analysis():
     # Step 1: Extract and encode frames
     frames = get_frames(video_path)
 
+    if not frames:
+        return jsonify({"error": "Failed to extract frames from video."}), 500
+
     # Step 2: Analyze frames using OpenAI tool-calling function
     analysis_results = analysis_with_openAI_vanilla(frames, language)
 
     # Step 3: Add base64 back into each frame for frontend display
     for i, result in enumerate(analysis_results):
         result["image"] = frames[i]["image"]  # Add base64-encoded image to each result
-
-    # Print the analysis results for debugging purposes
-    # print("Analysis Results:")
-    # for result in analysis_results:
-    #     short_image = result["image"][:30] + "..."  # only print first 30 chars
-    #     print(f"[{result['image_name']}] {result['description']} (image: {short_image})")
     
     # Step 4: Return in wrapped JSON format
     return jsonify({
         "frames": analysis_results
     })
 
-from flask import request, jsonify
-from langchain.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
-
 # Route for holistic summary generation
 @app.route("/holistic_summary", methods=["POST"])
 def holistic_summary():
+    """
+    Generate a holistic summary that combines transcript and visual analysis.
+    """
     data = request.get_json()
     transcript = data.get("transcript", "")
     frames = data.get("frames", [])
@@ -341,12 +394,16 @@ def holistic_summary():
         ("user", "{content}")
     ])
 
-    # Format the message and invoke the model
-    prompt = prompt_template.format_messages(content=full_content)
-    response = model.invoke(prompt)
+    try:
+        # Format the message and invoke the model
+        prompt = prompt_template.format_messages(content=full_content)
+        response = model.invoke(prompt)
+        # Get the result and return it
+        result = response.content
+    except Exception as e:
+        print(f"Holistic summary generation failed: {e}")
+        return jsonify({"error": f"Holistic summary generation failed: {str(e)}"}), 500
 
-    # Get the result and return it
-    result = response.content  # Assuming the response has 'content' field
     return jsonify({"holistic_summary": result}), 200
 
 if __name__ == '__main__':
