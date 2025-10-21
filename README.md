@@ -145,3 +145,5 @@ Set the following in a `.env` file or your system environment:
     ├── requirements.txt
     └── .env                        # API keys and config
 ```
+
+## THIS SECTION WAS MADE FROM AI FOUNDRY
